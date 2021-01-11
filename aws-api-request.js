@@ -1,6 +1,7 @@
 const crypto = require('crypto'),
     https = require('https'),
     zlib = require('zlib');
+const { encode } = require('punycode');
 
 function awsApiRequest(options) {
     return new Promise((resolve, reject) => {
@@ -45,13 +46,27 @@ function awsApiRequest(options) {
             return stringToSign;
         }
         
-        function createCanonicalRequest(method, uri, querystring, headers, payload) {
+        function createCanonicalRequest(method, path, querystring, headers, payload) {
             let canonical = method + '\n';
-            canonical += encodeURI(encodeURI(uri)) + '\n';
+
+            //Changed this from double encoding the path to single encoding it, to make S3 paths with spaces work. However, the documentation said to
+            //double encode it...? The only time we actually encode a path other than / is when uploading to S3 so just change this to single encoding here
+            //but it's possible it will mess up if the path has some weird characters that should be double encoded maybe??? If you had weird symbols in your version number?
+            //
+            //Unencoded parentheses in the path is valid. However, they must be encoded in the canonical path to pass signature verification even if
+            //the actual path has them unencoded.
+            canonical += encodeURI(path).replace(/\(/g, '%28').replace(/\)/g, '%29') + '\n';
         
             let qsKeys = Object.keys(querystring);
             qsKeys.sort();
-            let qsEntries = qsKeys.map(k => `${k}=${encodeURIComponent(querystring[k])}`);
+
+            //encodeURIComponent does NOT encode ', but we need it to be encoded. escape() is considered deprecated, so encode '
+            //manually. Also, using escape fails for some reason.
+            function encodeValue(v) {
+                return encodeURIComponent(v).replace(/'/g,'%27').replace(/:/g, '%3A').replace(/\(/g, '%28').replace(/\)/g, '%29').replace(/!/g, '%21');
+            }
+
+            let qsEntries = qsKeys.map(k => `${k}=${encodeValue(querystring[k])}`);
             canonical += qsEntries.join('&') + '\n';
         
             let headerKeys = Object.keys(headers).sort();
@@ -92,7 +107,7 @@ function awsApiRequest(options) {
         reqHeaders.Authorization = authHeader;
 
         //Now, lets finally do a HTTP REQUEST!!!
-        request(method, path, reqHeaders, querystring, payload, (err, result) => {
+        request(method, encodeURI(path), reqHeaders, querystring, payload, (err, result) => {
             if (err) {
                 reject(err);
             } else {
